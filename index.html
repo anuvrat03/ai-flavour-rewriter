@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Document Transformer & Word Exporter</title>
+    <!-- Mammoth.js for client-side Word (.docx) parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <!-- PDF.js for client-side PDF text extraction -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+        if (window.pdfjsLib) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+        }
+    </script>
     <style>
         :root {
             --primary: #4f46e5;
@@ -14,6 +23,7 @@
             --subtext: #64748b;
             --border: #cbd5e1;
             --radius: 12px;
+            --accent: #22c55e;
         }
 
         body {
@@ -22,7 +32,7 @@
             color: var(--text);
             padding: 16px;
             margin: 0;
-            max-width: 600px;
+            max-width: 650px;
             margin-left: auto;
             margin-right: auto;
         }
@@ -110,6 +120,37 @@
             padding: 4px;
         }
 
+        /* File drop zone styling */
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            background: #f1f5f9;
+            cursor: pointer;
+            transition: border-color 0.2s, background-color 0.2s;
+            margin-bottom: 12px;
+        }
+
+        .drop-zone.dragover {
+            border-color: var(--primary);
+            background-color: #e0e7ff;
+        }
+
+        .drop-zone p {
+            margin: 0;
+            font-size: 13px;
+            color: var(--subtext);
+            font-weight: 500;
+        }
+
+        .drop-zone span {
+            font-size: 11px;
+            color: #94a3b8;
+            display: block;
+            margin-top: 4px;
+        }
+
         .btn-submit {
             width: 100%;
             background: var(--primary);
@@ -157,6 +198,14 @@
             border: 1px solid var(--border);
         }
 
+        .status-msg {
+            font-size: 12px;
+            color: var(--primary);
+            margin-top: 6px;
+            font-weight: 600;
+            display: none;
+        }
+
         .footer-note {
             text-align: center;
             font-size: 11px;
@@ -169,7 +218,7 @@
 
     <div class="header">
         <h1>📑 AI Document Transformer</h1>
-        <p>Rewrite documents into distinct flavors & export to Word (.docx)</p>
+        <p>Upload files or paste text, rewrite into distinct flavors & export to Word (.docx)</p>
     </div>
 
     <!-- API KEY CARD -->
@@ -208,12 +257,24 @@
         </select>
     </div>
 
-    <!-- SOURCE INPUT -->
+    <!-- SOURCE INPUT & FILE UPLOAD -->
     <div class="card">
         <div class="label-row">
+            <label>UPLOAD DOCUMENT FILE</label>
+        </div>
+        
+        <!-- File Drop & Select Area -->
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <p>📂 Tap to upload or drop file here</p>
+            <span>Supports .docx, .pdf, .txt, .md, .html</span>
+        </div>
+        <input type="file" id="fileInput" accept=".txt,.md,.html,.htm,.docx,.pdf" style="display: none;" onchange="handleFileSelect(event)">
+        <div id="fileStatus" class="status-msg"></div>
+
+        <div class="label-row" style="margin-top: 10px;">
             <label for="inputText">SOURCE DOCUMENT / ARTICLE TEXT</label>
         </div>
-        <textarea id="inputText" rows="6" placeholder="Paste or type the article/document text you want to rewrite..."></textarea>
+        <textarea id="inputText" rows="6" placeholder="Document content will appear here when uploaded, or you can paste/type text directly..."></textarea>
     </div>
 
     <button class="btn-submit" onclick="transformDocument()">Transform Document</button>
@@ -228,7 +289,7 @@
     </div>
 
     <div class="footer-note">
-        Client-Side Processing • Runs locally or on GitHub Pages
+        Client-Side File Extraction & Processing • Runs locally or on GitHub Pages
     </div>
 
     <script>
@@ -238,6 +299,7 @@
             if (savedKey) {
                 document.getElementById('apiKey').value = savedKey;
             }
+            setupDragAndDrop();
         };
 
         function saveKey() {
@@ -252,6 +314,95 @@
             keyInput.type = keyInput.type === 'password' ? 'text' : 'password';
         }
 
+        // --- File Upload & Drag/Drop Handling ---
+        function setupDragAndDrop() {
+            const dropZone = document.getElementById('dropZone');
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropZone.classList.add('dragover');
+                }, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dropZone.classList.remove('dragover');
+                }, false);
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                if (files.length > 0) {
+                    processFile(files[0]);
+                }
+            }, false);
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                processFile(file);
+            }
+        }
+
+        async function processFile(file) {
+            const statusDiv = document.getElementById('fileStatus');
+            const textArea = document.getElementById('inputText');
+            
+            statusDiv.style.display = 'block';
+            statusDiv.innerText = `Reading file: ${file.name}...`;
+
+            const extension = file.name.split('.').pop().toLowerCase();
+
+            try {
+                if (extension === 'docx') {
+                    // Extract text from Word Document using Mammoth.js
+                    const arrayBuffer = await file.arrayBuffer();
+                    const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
+                    textArea.value = result.value;
+                    statusDiv.innerText = `✓ Loaded Word document (${file.name})`;
+                } else if (extension === 'pdf') {
+                    // Extract text from PDF using PDF.js
+                    const arrayBuffer = await file.arrayBuffer();
+                    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    let fullText = '';
+                    
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const pageText = textContent.items.map(item => item.str).join(' ');
+                        fullText += pageText + '\n\n';
+                    }
+                    
+                    textArea.value = fullText.trim();
+                    statusDiv.innerText = `✓ Loaded PDF document (${pdf.numPages} pages)`;
+                } else {
+                    // Plain text, Markdown, HTML files
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        let text = e.target.result;
+                        if (extension === 'html' || extension === 'htm') {
+                            // Strip basic HTML tags for clean prompt processing
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = text;
+                            text = tempDiv.innerText || tempDiv.textContent || text;
+                        }
+                        textArea.value = text;
+                        statusDiv.innerText = `✓ Loaded text file (${file.name})`;
+                    };
+                    reader.readAsText(file);
+                }
+            } catch (err) {
+                statusDiv.innerText = `❌ Failed to extract text: ${err.message}`;
+            }
+        }
+
+        // --- AI Transformation Logic ---
         const flavorPrompts = {
             academic: "Rewrite the following text into a formal academic paper style. Include clear sections (Introduction, Key Findings, Discussion), formal technical terminology, and rigorous structure.",
             educational: "Rewrite the following text as an educational guide. Use clear everyday analogies, visual metaphors, bullet points, and beginner-friendly breakdowns of complex concepts.",
@@ -273,7 +424,7 @@
             }
 
             if (!text) {
-                alert("Please enter some document or article text to transform.");
+                alert("Please upload a file or paste document text to transform.");
                 return;
             }
 
@@ -310,6 +461,7 @@
             }
         }
 
+        // --- Word Export Logic ---
         function exportToWord() {
             const text = document.getElementById('output').innerText;
             if (!text || text === "Your transformed document will appear here...") {
@@ -317,7 +469,6 @@
                 return;
             }
 
-            // Wrap text in Word-compliant HTML container
             const htmlContent = `
                 <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
                 <head>
